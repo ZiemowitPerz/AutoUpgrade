@@ -24,7 +24,7 @@ public sealed class UpgraderService : IHostedService
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
-        string binPath = _configuration.ServicePath;
+       string binPath = _configuration.ServicePath;
         
         string newVersionPath = Path.Combine(binPath, "NewVersion");
         if (!IsProperConfiguration(binPath))
@@ -87,13 +87,41 @@ public sealed class UpgraderService : IHostedService
         return ServiceName.GetServiceName(_configuration.ServiceName, _configuration.ServiceNameSuffix);
     }
 
+	private void Repeat(Action<TimeSpan> action)
+	{
+		TimeSpan time = TimeSpan.FromSeconds(10);
+		int i = 4;
+		while (i >= 0)
+		{
+			action(time);
+			time *= 2;
+			i--;
+		}
+	}
+
+	private void StartAction(TimeSpan wait)
+    {
+        ServiceController appDriver = new ServiceController(GetServiceName());
+        if (appDriver.Status == ServiceControllerStatus.Stopped)
+        {
+            appDriver.Start();
+            appDriver.WaitForStatus(ServiceControllerStatus.Running, wait);
+        }
+    }
+
 	private void StopAction(TimeSpan wait)
 	{
 		string serviceName = GetServiceName();
-		ServiceController appDriver = new ServiceController(serviceName);
 
-		if (appDriver.Status == ServiceControllerStatus.Running)
+		try
 		{
+			using ServiceController appDriver = new ServiceController(serviceName);
+
+			if (appDriver.Status == ServiceControllerStatus.Stopped || appDriver.Status == ServiceControllerStatus.StopPending)
+			{
+				return;
+			}
+
 			int processId = GetServiceProcessId(serviceName);
 			var stopwatch = Stopwatch.StartNew();
 
@@ -102,25 +130,16 @@ public sealed class UpgraderService : IHostedService
 
 			if (processId != -1)
 			{
-				try
-				{
-					Process process = Process.GetProcessById(processId);
-					if (!process.HasExited)
-					{
-						TimeSpan remainingWait = wait - stopwatch.Elapsed;
-						if (remainingWait > TimeSpan.Zero)
-							process.WaitForExit((int)remainingWait.TotalMilliseconds);
-
-						// Optional: Kill if still not exited
-						if (!process.HasExited)
-							process.Kill();
-					}
-				}
-				catch (ArgumentException)
-				{
-					// Process already exited
-				}
+				TryKillProcess(processId, wait - stopwatch.Elapsed);
 			}
+		}
+		catch (InvalidOperationException ex) when (ex.InnerException is System.ComponentModel.Win32Exception win32Ex && win32Ex.NativeErrorCode == 1062)
+		{
+            return;
+		}
+		catch (Exception ex)
+		{
+			return;
 		}
 	}
 
@@ -128,8 +147,7 @@ public sealed class UpgraderService : IHostedService
 	{
 		try
 		{
-			using (var searcher = new ManagementObjectSearcher(
-				$"SELECT ProcessId FROM Win32_Service WHERE Name = '{serviceName}'"))
+			using (var searcher = new ManagementObjectSearcher($"SELECT ProcessId FROM Win32_Service WHERE Name = '{serviceName}'"))
 			{
 				foreach (ManagementObject obj in searcher.Get())
 				{
@@ -144,27 +162,28 @@ public sealed class UpgraderService : IHostedService
 		return -1;
 	}
 
-	private void StartAction(TimeSpan wait)
-    {
-        ServiceController appDriver = new ServiceController(GetServiceName());
-        if (appDriver.Status == ServiceControllerStatus.Stopped)
-        {
-            appDriver.Start();
-            appDriver.WaitForStatus(ServiceControllerStatus.Running, wait);
-        }
-    }
+	private void TryKillProcess(int processId, TimeSpan remainingWait)
+	{
+		try
+		{
+			Process process = Process.GetProcessById(processId);
+			if (!process.HasExited)
+			{
+				if (remainingWait > TimeSpan.Zero)
+					process.WaitForExit((int)remainingWait.TotalMilliseconds);
 
-    private void Repeat(Action<TimeSpan> action)
-    {
-        TimeSpan time = TimeSpan.FromSeconds(5);
-        int i = 5;
-        while (i >= 0)
-        {
-            action(time);
-            time *= 2;
-            i--;
-        }
-    }
+				if (!process.HasExited)
+				{
+					process.Kill();
+					process.WaitForExit();
+				}
+			}
+		}
+		catch (ArgumentException)
+		{
+            return;
+		}
+	}
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
