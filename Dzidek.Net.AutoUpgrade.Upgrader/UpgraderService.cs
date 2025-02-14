@@ -75,7 +75,7 @@ public sealed class UpgraderService : IHostedService
             Directory.CreateDirectory(newVersionPath);
         }
 
-        Repeat(StopAction);
+        StopAction;
         
         UnzipAndCopyFiles(newVersionPath, binPath, serviceOldVersionsPath);
 
@@ -89,8 +89,8 @@ public sealed class UpgraderService : IHostedService
 
 	private void Repeat(Action<TimeSpan> action)
 	{
-		TimeSpan time = TimeSpan.FromSeconds(10);
-		int i = 4;
+		TimeSpan time = TimeSpan.FromSeconds(5);
+		int i = 5;
 		while (i >= 0)
 		{
 			action(time);
@@ -109,7 +109,7 @@ public sealed class UpgraderService : IHostedService
         }
     }
 
-	private void StopAction(TimeSpan wait)
+	private void StopAction(TimeSpan wait = 10)
 	{
 		string serviceName = GetServiceName();
 
