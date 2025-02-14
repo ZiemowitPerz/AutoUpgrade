@@ -1,4 +1,5 @@
-﻿using System.IO.Compression;
+﻿using System.Diagnostics;
+using System.IO.Compression;
 using System.Management;
 using System.ServiceProcess;
 using Dzidek.Net.AutoUpgrade.Common;
@@ -24,6 +25,7 @@ public sealed class UpgraderService : IHostedService
     public Task StartAsync(CancellationToken cancellationToken)
     {
         string binPath = _configuration.ServicePath;
+        
         string newVersionPath = Path.Combine(binPath, "NewVersion");
         if (!IsProperConfiguration(binPath))
         {
@@ -85,17 +87,64 @@ public sealed class UpgraderService : IHostedService
         return ServiceName.GetServiceName(_configuration.ServiceName, _configuration.ServiceNameSuffix);
     }
 
-    private void StopAction(TimeSpan wait)
-    {
-        ServiceController appDriver = new ServiceController(GetServiceName());
-        if (appDriver.Status == ServiceControllerStatus.Running)
-        {
-            appDriver.Stop();
-            appDriver.WaitForStatus(ServiceControllerStatus.Stopped, wait);
-        }
-    }
+	private void StopAction(TimeSpan wait)
+	{
+		string serviceName = GetServiceName();
+		ServiceController appDriver = new ServiceController(serviceName);
 
-    private void StartAction(TimeSpan wait)
+		if (appDriver.Status == ServiceControllerStatus.Running)
+		{
+			int processId = GetServiceProcessId(serviceName);
+			var stopwatch = Stopwatch.StartNew();
+
+			appDriver.Stop();
+			appDriver.WaitForStatus(ServiceControllerStatus.Stopped, wait);
+
+			if (processId != -1)
+			{
+				try
+				{
+					Process process = Process.GetProcessById(processId);
+					if (!process.HasExited)
+					{
+						TimeSpan remainingWait = wait - stopwatch.Elapsed;
+						if (remainingWait > TimeSpan.Zero)
+							process.WaitForExit((int)remainingWait.TotalMilliseconds);
+
+						// Optional: Kill if still not exited
+						if (!process.HasExited)
+							process.Kill();
+					}
+				}
+				catch (ArgumentException)
+				{
+					// Process already exited
+				}
+			}
+		}
+	}
+
+	private int GetServiceProcessId(string serviceName)
+	{
+		try
+		{
+			using (var searcher = new ManagementObjectSearcher(
+				$"SELECT ProcessId FROM Win32_Service WHERE Name = '{serviceName}'"))
+			{
+				foreach (ManagementObject obj in searcher.Get())
+				{
+					return Convert.ToInt32(obj["ProcessId"]);
+				}
+			}
+		}
+		catch
+		{
+			return -1;
+		}
+		return -1;
+	}
+
+	private void StartAction(TimeSpan wait)
     {
         ServiceController appDriver = new ServiceController(GetServiceName());
         if (appDriver.Status == ServiceControllerStatus.Stopped)
