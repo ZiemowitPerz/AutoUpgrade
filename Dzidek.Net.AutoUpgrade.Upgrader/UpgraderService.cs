@@ -75,7 +75,7 @@ public sealed class UpgraderService : IHostedService
             Directory.CreateDirectory(newVersionPath);
         }
 
-        Repeat(StopAction);
+        StopAction(TimeSpan.FromSeconds(20));
         
         UnzipAndCopyFiles(newVersionPath, binPath, serviceOldVersionsPath);
 
