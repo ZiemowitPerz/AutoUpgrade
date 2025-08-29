@@ -22,7 +22,7 @@ public sealed class UpgraderService : IHostedService
         _logger = logger;
     }
 
-    public Task StartAsync(CancellationToken cancellationToken)
+    public async Task StartAsync(CancellationToken cancellationToken)
     {
        string binPath = _configuration.ServicePath;
         
@@ -31,7 +31,7 @@ public sealed class UpgraderService : IHostedService
         {
             throw new ArgumentException("Invalid service path");
         }
-        Upgrade(newVersionPath, binPath, _configuration.ServiceOldVersionsPath);
+        await Upgrade(newVersionPath, binPath, _configuration.ServiceOldVersionsPath);
         _fileWatcher.OnStart(
             new FileSystemWatcherConfiguration()
             {
@@ -42,7 +42,6 @@ public sealed class UpgraderService : IHostedService
             {
                 Created = (sender, args) => { Upgrade(newVersionPath, binPath, _configuration.ServiceOldVersionsPath); }
             });
-        return Task.CompletedTask;
     }
 
     private bool IsProperConfiguration(string binPath)
@@ -68,18 +67,18 @@ public sealed class UpgraderService : IHostedService
         throw new ArgumentException("Invalid service name");
     }
 
-    private void Upgrade(string newVersionPath, string binPath, string? serviceOldVersionsPath)
+    private async Task Upgrade(string newVersionPath, string binPath, string? serviceOldVersionsPath)
     {
         if (!Directory.Exists(newVersionPath))
         {
             Directory.CreateDirectory(newVersionPath);
         }
 
-        StopAction(TimeSpan.FromSeconds(20));
-        
-        UnzipAndCopyFiles(newVersionPath, binPath, serviceOldVersionsPath);
+        await StopAction(TimeSpan.FromSeconds(20));
 
-        Repeat(StartAction);
+        await UnzipAndCopyFiles(newVersionPath, binPath, serviceOldVersionsPath);
+
+        await RepeatAsync(StartAction);
     }
 
     private string GetServiceName()
@@ -87,59 +86,71 @@ public sealed class UpgraderService : IHostedService
         return ServiceName.GetServiceName(_configuration.ServiceName, _configuration.ServiceNameSuffix);
     }
 
-	private void Repeat(Action<TimeSpan> action)
+    private async Task RepeatAsync(Func<TimeSpan, Task> func)
 	{
 		TimeSpan time = TimeSpan.FromSeconds(10);
 		int i = 4;
 		while (i >= 0)
 		{
-			action(time);
+			await func(time);
 			time *= 2;
 			i--;
 		}
 	}
 
-	private void StartAction(TimeSpan wait)
+	private async Task StartAction(TimeSpan wait)
     {
+        _logger.LogDebug($"11 StartAction waitTime = {wait.TotalSeconds.ToString()}");
         ServiceController appDriver = new ServiceController(GetServiceName());
         if (appDriver.Status == ServiceControllerStatus.Stopped)
         {
-            appDriver.Start();
-            appDriver.WaitForStatus(ServiceControllerStatus.Running, wait);
+            try
+            {
+                appDriver.Start();
+                appDriver.WaitForStatus(ServiceControllerStatus.Running, wait);
+            }
+            catch
+            {
+                _logger.LogError($"Failed to start service {GetServiceName()}");
+            }
         }
     }
 
-	private void StopAction(TimeSpan wait)
+	private async Task StopAction(TimeSpan wait)
 	{
 		string serviceName = GetServiceName();
 
-		try
+        _logger.LogDebug($"toping service : {serviceName}");
+        try
 		{
 			using ServiceController appDriver = new ServiceController(serviceName);
 
-			if (appDriver.Status == ServiceControllerStatus.Stopped || appDriver.Status == ServiceControllerStatus.StopPending)
+            if (appDriver.Status == ServiceControllerStatus.Stopped || appDriver.Status == ServiceControllerStatus.StopPending)
 			{
-				return;
+                _logger.LogDebug($"Service '{serviceName}' is already pending stop or is stopped");
+                return;
 			}
 
 			int processId = GetServiceProcessId(serviceName);
 			var stopwatch = Stopwatch.StartNew();
 
-			appDriver.Stop();
-			appDriver.WaitForStatus(ServiceControllerStatus.Stopped, wait);
+            _logger.LogDebug($"Gracefully stopping service '{serviceName}' processId = {processId}");
+            appDriver.Stop();
+            appDriver.WaitForStatus(ServiceControllerStatus.Stopped, wait);
 
 			if (processId != -1)
-			{
-				TryKillProcess(processId, wait - stopwatch.Elapsed);
+            {
+                await TryKillProcess(processId, wait - stopwatch.Elapsed);
 			}
-		}
+            return;
+        }
 		catch (InvalidOperationException ex) when (ex.InnerException is System.ComponentModel.Win32Exception win32Ex && win32Ex.NativeErrorCode == 1062)
 		{
             return;
 		}
 		catch (Exception ex)
 		{
-			return;
+            return;
 		}
 	}
 
@@ -162,28 +173,33 @@ public sealed class UpgraderService : IHostedService
 		return -1;
 	}
 
-	private void TryKillProcess(int processId, TimeSpan remainingWait)
+	private async Task TryKillProcess(int processId, TimeSpan remainingWait)
 	{
 		try
 		{
-			Process process = Process.GetProcessById(processId);
+            Process process = Process.GetProcessById(processId);
 			if (!process.HasExited)
 			{
 				if (remainingWait > TimeSpan.Zero)
+                    _logger.LogDebug($"Awaiting for processId = {processId} to Exit; wait {remainingWait.TotalSeconds.ToString()} sec");
 					process.WaitForExit((int)remainingWait.TotalMilliseconds);
 
 				if (!process.HasExited)
 				{
-					process.Kill();
+                    _logger.LogDebug($"Process refuses to exit: Killing processId = {processId}");
+                    process.Kill();
 					process.WaitForExit();
 				}
-			}
-		}
-		catch (ArgumentException)
+            }
+            return;
+        }
+		catch (ArgumentException ex)
 		{
+            _logger.LogDebug($"Error while trying to kill processid = {processId}: {ex.Message}");
             return;
 		}
-	}
+
+    }
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
@@ -191,27 +207,57 @@ public sealed class UpgraderService : IHostedService
         return Task.CompletedTask;
     }
 
-    private void UnzipAndCopyFiles(string sourcePath, string servicePath, string? serviceOldVersionsPath)
+    private async Task WaitForFileUnlock(string filePath, TimeSpan timeout)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        while (stopwatch.Elapsed < timeout)
+        {
+            try
+            {
+                using (FileStream stream = File.Open(filePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                {
+                    return;
+                }
+            }
+            catch (IOException)
+            {
+                await Task.Delay(200);
+            }
+        }
+
+        throw new System.ServiceProcess.TimeoutException($"File '{filePath}' is still locked after {timeout.TotalSeconds} seconds.");
+    }
+
+    private async Task UnzipAndCopyFiles(string sourcePath, string servicePath, string? serviceOldVersionsPath)
     {
         string[] files = Directory.GetFiles(sourcePath);
 
         if (files.Length > 0)
         {
-            ZipOldVersion(servicePath, serviceOldVersionsPath);
+            await ZipOldVersion(files, servicePath, serviceOldVersionsPath);
         }
+        await ReplaceFilesFromZip(sourcePath, servicePath, files);
 
+        return;
+    }
+
+    private async Task ReplaceFilesFromZip(string sourcePath, string servicePath, string[] files)
+    {
         foreach (string file in files)
         {
             _logger.LogDebug("Starting unzipping '{0}'", file);
             string fileName = Path.GetFileName(file);
             string zipPath = Path.Combine(sourcePath, fileName);
+
+            await WaitForFileUnlock(zipPath, TimeSpan.FromSeconds(5));
+
             ZipFile.ExtractToDirectory(zipPath, servicePath, true);
             File.Delete(file);
             _logger.LogInformation("The new version has been copied '{0}'", file);
         }
     }
-    
-    private void ZipOldVersion(string sourcePath, string? destPath)
+
+    private async Task ZipOldVersion(string[] files, string sourcePath, string? destPath)
     {
         if (destPath != null)
         {
@@ -219,10 +265,19 @@ public sealed class UpgraderService : IHostedService
             {
                 Directory.CreateDirectory(destPath);
             }
+
+            foreach (string file in files)
+            {
+                string fileName = Path.GetFileName(file);
+                string zipPath = Path.Combine(sourcePath, fileName);
+                await WaitForFileUnlock(zipPath, TimeSpan.FromSeconds(5));
+            }
+
             string destFile = Path.Combine(destPath, $"{DateTime.UtcNow.ToString("o").Replace(":","_").Replace(".","_")}.zip");
             _logger.LogDebug("Starting zipping '{0}'", sourcePath);
             ZipFile.CreateFromDirectory(sourcePath, destFile);
             _logger.LogInformation("The old version has been copied '{0}'", destFile);
         }
+        return;
     }
 }
