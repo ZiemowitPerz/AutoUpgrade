@@ -5,14 +5,14 @@
     <Title>Dzidek.Net.AutoUpgrade.ZiemoFork</Title>
     <Copyright>@Dzidek.Net</Copyright>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-    <Version>1.0.7.1</Version>
+    <Version>1.0.8</Version>
     <PackageProjectUrl>https://github.com/DzidekDotNet/AutoUpgrade</PackageProjectUrl>
     <RepositoryUrl>https://github.com/DzidekDotNet/AutoUpgrade</RepositoryUrl>
     <PackageLicenseUrl>https://github.com/DzidekDotNet/AutoUpgrade/blob/main/LICENSE</PackageLicenseUrl>
     <PackageTags>DotNetCore, Auto Upgrade, Windows Services</PackageTags>
     <Description>An auto-updating Windows service with the ability to send a new compressed version on demand</Description>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <TargetFrameworks>net7.0</TargetFrameworks>
+    <TargetFrameworks>net8.0</TargetFrameworks>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Dzidek.Net.AutoUpgrade.Common\Dzidek.Net.AutoUpgrade.Common.csproj" />
@@ -21,7 +21,7 @@
     <None Include="..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="7.0.1" />
-    <PackageReference Include="System.Management" Version="7.0.2" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="8.0.1" />
+    <PackageReference Include="System.Management" Version="8.0.0" />
   </ItemGroup>
 </Project>
