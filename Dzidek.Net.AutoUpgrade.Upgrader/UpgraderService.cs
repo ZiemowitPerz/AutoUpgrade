@@ -249,7 +249,7 @@ public sealed class UpgraderService : IHostedService
             string fileName = Path.GetFileName(file);
             string zipPath = Path.Combine(sourcePath, fileName);
 
-            await WaitForFileUnlock(zipPath, TimeSpan.FromSeconds(5));
+            await WaitForFileUnlock(file, TimeSpan.FromSeconds(5));
 
             ZipFile.ExtractToDirectory(zipPath, servicePath, true);
             File.Delete(file);
@@ -270,7 +270,7 @@ public sealed class UpgraderService : IHostedService
             {
                 string fileName = Path.GetFileName(file);
                 string zipPath = Path.Combine(sourcePath, fileName);
-                await WaitForFileUnlock(zipPath, TimeSpan.FromSeconds(5));
+                await WaitForFileUnlock(file, TimeSpan.FromSeconds(5));
             }
 
             string destFile = Path.Combine(destPath, $"{DateTime.UtcNow.ToString("o").Replace(":","_").Replace(".","_")}.zip");
