@@ -1,11 +1,11 @@
-﻿using System.Diagnostics;
+﻿using Dzidek.Net.AutoUpgrade.Common;
+using Dzidek.Net.AutoUpgrade.Upgrader.FileSystemWatchers;
+using Dzidek.Net.AutoUpgrade.Upgrader.FileUtils;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using System.IO.Compression;
 using System.Management;
 using System.ServiceProcess;
-using Dzidek.Net.AutoUpgrade.Common;
-using Dzidek.Net.AutoUpgrade.Upgrader.FileSystemWatchers;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 
 namespace Dzidek.Net.AutoUpgrade.Upgrader;
 
@@ -24,14 +24,14 @@ public sealed class UpgraderService : IHostedService
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-       string binPath = _configuration.ServicePath;
-        
-        string newVersionPath = Path.Combine(binPath, "NewVersion");
-        if (!IsProperConfiguration(binPath))
+        string servicePath = _configuration.ServicePath;
+        string newVersionPath = _configuration.GetNewVersionPath();
+
+        if (!IsProperConfiguration(servicePath))
         {
             throw new ArgumentException("Invalid service path");
         }
-        await Upgrade(newVersionPath, binPath, _configuration.ServiceOldVersionsPath);
+        await Upgrade(newVersionPath, servicePath, _configuration.ServiceOldVersionsPath);
         _fileWatcher.OnStart(
             new FileSystemWatcherConfiguration()
             {
@@ -40,13 +40,13 @@ public sealed class UpgraderService : IHostedService
             },
             new FileSystemWatcherActions()
             {
-                Created = (sender, args) => { Upgrade(newVersionPath, binPath, _configuration.ServiceOldVersionsPath); }
+                Created = (sender, args) => { Upgrade(newVersionPath, servicePath, _configuration.ServiceOldVersionsPath); }
             });
     }
 
     private bool IsProperConfiguration(string binPath)
     {
-        return Directory.GetFiles(binPath).Any() && Directory.GetFiles(GetServicePath()).Any();
+        return (Directory.GetFiles(binPath).Any() || Directory.GetDirectories(binPath).Any()) && Directory.GetFiles(GetServicePath()).Any();
     }
 
     private string GetServicePath()
@@ -55,7 +55,7 @@ public sealed class UpgraderService : IHostedService
         ManagementObjectCollection collection = searcher.Get();
 
         foreach (ManagementObject obj in collection)
-        {    
+        {
             string name = obj["Name"] as string;
             string pathName = obj["PathName"] as string;
             if (name == GetServiceName() && !string.IsNullOrEmpty(pathName))
@@ -67,18 +67,89 @@ public sealed class UpgraderService : IHostedService
         throw new ArgumentException("Invalid service name");
     }
 
-    private async Task Upgrade(string newVersionPath, string binPath, string? serviceOldVersionsPath)
+    private async Task Upgrade(string newVersionPath, string servicePath, string? serviceOldVersionsPath)
     {
         if (!Directory.Exists(newVersionPath))
         {
             Directory.CreateDirectory(newVersionPath);
         }
 
-        await StopAction(TimeSpan.FromSeconds(20));
+        string servicePathParent = Directory.GetParent(servicePath)?.FullName
+                ?? throw new DirectoryNotFoundException($"Given path is incorrect: {servicePath}");
+        string extractionPath = Path.Combine(servicePathParent, "ExtractionDirectory");
 
-        await UnzipAndCopyFiles(newVersionPath, binPath, serviceOldVersionsPath);
+        await RetryPolicyRetriever.GetRetryAsyncForever(_logger, "Some problem appeared while unzipping new version.")
+            .ExecuteAsync(() => ExtractZipStep(newVersionPath, servicePath, serviceOldVersionsPath, extractionPath));
 
-        await RepeatAsync(StartAction);
+        RetryPolicyRetriever.GetRetryForever(_logger, "Some problem appeared while stopping process")
+            .Execute(() => StopServiceStep(TimeSpan.FromSeconds(10)));
+
+        RetryPolicyRetriever.GetRetryForever(_logger, "Some problem appeared while copying new version files.")
+            .Execute(() => ReplaceFilesWithNewVersionStep(extractionPath, servicePath));
+
+        RetryPolicyRetriever.GetRetryForever(_logger, "Some problem appeared while starting process")
+            .Execute(() => StartServiceStep(TimeSpan.FromSeconds(10)));
+    }
+
+    private void ReplaceFilesWithNewVersionStep(string extractionPath, string servicePath)
+    {
+        var newVersionFiles = FileSearcher.GetFilesRecursively(extractionPath);
+        var currentVersionFiles = FileSearcher.GetFilesRecursively(servicePath, newVersionFiles.Select(x => x.FileRelativePath).ToList());
+
+        var filesToReplace = GetFilesToReplace(newVersionFiles, currentVersionFiles);
+
+        if (!filesToReplace.Any())
+        {
+            return;
+        }
+
+        ReplaceFiles(filesToReplace, extractionPath, servicePath);
+    }
+
+    private void ReplaceFiles(List<FileMd5> filesToReplace, string extractionPath, string servicePath)
+    {
+        var notCopiedFiles = filesToReplace;
+
+        RetryPolicyRetriever.GetForeverWhenListNotEmpty<FileMd5>(_logger, "An error occurred while copying file")
+            .Execute(() =>
+            {
+                notCopiedFiles = TryReplaceFiles(notCopiedFiles, extractionPath, servicePath);
+                return notCopiedFiles;
+            });
+    }
+
+    private List<FileMd5> TryReplaceFiles(List<FileMd5> filesToReplace, string extractionPath, string servicePath)
+    {
+        var notCopiedFiles = new List<FileMd5>();
+        foreach (var fileToReplace in filesToReplace)
+        {
+            var fullFilePath = Path.Combine(extractionPath, fileToReplace.FileRelativePath);
+            var destinationFilePath = Path.Combine(servicePath,fileToReplace.FileRelativePath);
+            try
+            {
+                File.Copy(fullFilePath, destinationFilePath, true);
+            }
+            catch (Exception ex) {
+                notCopiedFiles.Add(fileToReplace);
+                _logger.LogError($"An error occurred while copying file: {fullFilePath}.", ex);
+            }
+        }
+        return notCopiedFiles;
+    }
+
+    private List<FileMd5> GetFilesToReplace(List<FileMd5> newVersionFiles, List<FileMd5> currentVersionFiles)
+    {
+        var result = new List<FileMd5>();
+        foreach (var newFile in newVersionFiles)
+        {
+            if (!currentVersionFiles.Any(x =>
+                x.FileRelativePath == newFile.FileRelativePath &&
+                x.Md5 == newFile.Md5))
+            {
+                result.Add(newFile);
+            }
+        }
+        return result;
     }
 
     private string GetServiceName()
@@ -86,119 +157,38 @@ public sealed class UpgraderService : IHostedService
         return ServiceName.GetServiceName(_configuration.ServiceName, _configuration.ServiceNameSuffix);
     }
 
-    private async Task RepeatAsync(Func<TimeSpan, Task> func)
-	{
-		TimeSpan time = TimeSpan.FromSeconds(10);
-		int i = 4;
-		while (i >= 0)
-		{
-			await func(time);
-			time *= 2;
-			i--;
-		}
-	}
-
-	private async Task StartAction(TimeSpan wait)
+    private void StartServiceStep(TimeSpan wait)
     {
         _logger.LogDebug($"11 StartAction waitTime = {wait.TotalSeconds.ToString()}");
         ServiceController appDriver = new ServiceController(GetServiceName());
         if (appDriver.Status == ServiceControllerStatus.Stopped)
         {
-            try
-            {
-                appDriver.Start();
-                appDriver.WaitForStatus(ServiceControllerStatus.Running, wait);
-            }
-            catch
-            {
-                _logger.LogError($"Failed to start service {GetServiceName()}");
-            }
+            appDriver.Start();
+        }
+
+        if (appDriver.Status != ServiceControllerStatus.Running)
+        {
+            appDriver.WaitForStatus(ServiceControllerStatus.Running, wait);
         }
     }
 
-	private async Task StopAction(TimeSpan wait)
-	{
-		string serviceName = GetServiceName();
+    private void StopServiceStep(TimeSpan wait)
+    {
+        string serviceName = GetServiceName();
 
-        _logger.LogDebug($"toping service : {serviceName}");
-        try
-		{
-			using ServiceController appDriver = new ServiceController(serviceName);
+        using ServiceController appDriver = new ServiceController(serviceName);
 
-            if (appDriver.Status == ServiceControllerStatus.Stopped || appDriver.Status == ServiceControllerStatus.StopPending)
-			{
-                _logger.LogDebug($"Service '{serviceName}' is already pending stop or is stopped");
-                return;
-			}
+        if (appDriver.Status == ServiceControllerStatus.Stopped)
+        {
+            return;
+        }
 
-			int processId = GetServiceProcessId(serviceName);
-			var stopwatch = Stopwatch.StartNew();
-
-            _logger.LogDebug($"Gracefully stopping service '{serviceName}' processId = {processId}");
+        if (appDriver.Status == ServiceControllerStatus.Running)
+        {
             appDriver.Stop();
-            appDriver.WaitForStatus(ServiceControllerStatus.Stopped, wait);
-
-			if (processId != -1)
-            {
-                await TryKillProcess(processId, wait - stopwatch.Elapsed);
-			}
-            return;
         }
-		catch (InvalidOperationException ex) when (ex.InnerException is System.ComponentModel.Win32Exception win32Ex && win32Ex.NativeErrorCode == 1062)
-		{
-            return;
-		}
-		catch (Exception ex)
-		{
-            return;
-		}
-	}
 
-	private int GetServiceProcessId(string serviceName)
-	{
-		try
-		{
-			using (var searcher = new ManagementObjectSearcher($"SELECT ProcessId FROM Win32_Service WHERE Name = '{serviceName}'"))
-			{
-				foreach (ManagementObject obj in searcher.Get())
-				{
-					return Convert.ToInt32(obj["ProcessId"]);
-				}
-			}
-		}
-		catch
-		{
-			return -1;
-		}
-		return -1;
-	}
-
-	private async Task TryKillProcess(int processId, TimeSpan remainingWait)
-	{
-		try
-		{
-            Process process = Process.GetProcessById(processId);
-			if (!process.HasExited)
-			{
-				if (remainingWait > TimeSpan.Zero)
-                    _logger.LogDebug($"Awaiting for processId = {processId} to Exit; wait {remainingWait.TotalSeconds.ToString()} sec");
-					process.WaitForExit((int)remainingWait.TotalMilliseconds);
-
-				if (!process.HasExited)
-				{
-                    _logger.LogDebug($"Process refuses to exit: Killing processId = {processId}");
-                    process.Kill();
-					process.WaitForExit();
-				}
-            }
-            return;
-        }
-		catch (ArgumentException ex)
-		{
-            _logger.LogDebug($"Error while trying to kill processid = {processId}: {ex.Message}");
-            return;
-		}
-
+        appDriver.WaitForStatus(ServiceControllerStatus.Stopped, wait);
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
@@ -207,77 +197,64 @@ public sealed class UpgraderService : IHostedService
         return Task.CompletedTask;
     }
 
-    private async Task WaitForFileUnlock(string filePath, TimeSpan timeout)
-    {
-        var stopwatch = Stopwatch.StartNew();
-        while (stopwatch.Elapsed < timeout)
-        {
-            try
-            {
-                using (FileStream stream = File.Open(filePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
-                {
-                    return;
-                }
-            }
-            catch (IOException)
-            {
-                await Task.Delay(200);
-            }
-        }
-
-        throw new System.ServiceProcess.TimeoutException($"File '{filePath}' is still locked after {timeout.TotalSeconds} seconds.");
-    }
-
-    private async Task UnzipAndCopyFiles(string sourcePath, string servicePath, string? serviceOldVersionsPath)
+    private async Task ExtractZipStep(string sourcePath, string servicePath, string? serviceOldVersionsPath, string extractionPath)
     {
         string[] files = Directory.GetFiles(sourcePath);
 
-        if (files.Length > 0)
-        {
-            await ZipOldVersion(files, servicePath, serviceOldVersionsPath);
-        }
-        await ReplaceFilesFromZip(sourcePath, servicePath, files);
+        if (!files.Any()) return;
 
-        return;
+        // TODO: EXECUTE IF NOT EXECUTED
+        await ZipOldVersion(files, servicePath, serviceOldVersionsPath);
+        await ExtractZip(sourcePath, files, extractionPath);
     }
 
-    private async Task ReplaceFilesFromZip(string sourcePath, string servicePath, string[] files)
+    private async Task ExtractZip(string sourcePath, string[] files, string extractionPath)
     {
-        foreach (string file in files)
+        // file is 1 whole zip
+        foreach (string zipFile in files)
         {
-            _logger.LogDebug("Starting unzipping '{0}'", file);
-            string fileName = Path.GetFileName(file);
-            string zipPath = Path.Combine(sourcePath, fileName);
+            _logger.LogDebug("Starting unzipping '{0}'", zipFile);
+            string zipFileName = Path.GetFileName(zipFile);
+            string zipPath = Path.Combine(sourcePath, zipFileName);
 
-            await WaitForFileUnlock(file, TimeSpan.FromSeconds(5));
+            await PrepareDirectory(extractionPath);
 
-            ZipFile.ExtractToDirectory(zipPath, servicePath, true);
-            File.Delete(file);
-            _logger.LogInformation("The new version has been copied '{0}'", file);
+            ZipFile.ExtractToDirectory(zipPath, extractionPath, true);
+
+            File.Delete(zipFile);
         }
+    }
+
+    private async Task PrepareDirectory(string extractionPath)
+    {
+        await Task.Run(() =>
+        {
+            if (Directory.Exists(extractionPath))
+            {
+                Directory.Delete(extractionPath, recursive: true);
+            }
+
+            Directory.CreateDirectory(extractionPath);
+        });
     }
 
     private async Task ZipOldVersion(string[] files, string sourcePath, string? destPath)
     {
-        if (destPath != null)
+        if (destPath == null)
         {
-            if (!Directory.Exists(destPath))
-            {
-                Directory.CreateDirectory(destPath);
-            }
-
-            foreach (string file in files)
-            {
-                string fileName = Path.GetFileName(file);
-                string zipPath = Path.Combine(sourcePath, fileName);
-                await WaitForFileUnlock(file, TimeSpan.FromSeconds(5));
-            }
-
-            string destFile = Path.Combine(destPath, $"{DateTime.UtcNow.ToString("o").Replace(":","_").Replace(".","_")}.zip");
-            _logger.LogDebug("Starting zipping '{0}'", sourcePath);
-            ZipFile.CreateFromDirectory(sourcePath, destFile);
-            _logger.LogInformation("The old version has been copied '{0}'", destFile);
+            return;
         }
-        return;
+
+        if (!Directory.Exists(destPath))
+        {
+            Directory.CreateDirectory(destPath);
+        }
+
+        string destFile = Path.Combine(destPath, $"{DateTime.UtcNow.ToString("o").Replace(":", "_").Replace(".", "_")}.zip");
+        _logger.LogDebug("Starting zipping '{0}'", sourcePath);
+
+        ZipFile.CreateFromDirectory(sourcePath, destFile);
+
+        _logger.LogInformation("The old version has been copied '{0}'", destFile);
     }
 }
