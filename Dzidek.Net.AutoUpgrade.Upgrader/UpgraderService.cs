@@ -74,9 +74,7 @@ public sealed class UpgraderService : IHostedService
             Directory.CreateDirectory(newVersionPath);
         }
 
-        string servicePathParent = Directory.GetParent(servicePath)?.FullName
-                ?? throw new DirectoryNotFoundException($"Given path is incorrect: {servicePath}");
-        string extractionPath = Path.Combine(servicePathParent, "ExtractionDirectory");
+        string extractionPath = Path.Combine(servicePath, "ExtractionDirectory");
 
         await RetryPolicyRetriever.GetRetryAsyncForever(_logger, "Some problem appeared while unzipping new version.")
             .ExecuteAsync(() => ExtractZipStep(newVersionPath, servicePath, serviceOldVersionsPath, extractionPath));
@@ -127,6 +125,12 @@ public sealed class UpgraderService : IHostedService
             var destinationFilePath = Path.Combine(servicePath,fileToReplace.FileRelativePath);
             try
             {
+                var destinationDirectory = Path.GetDirectoryName(destinationFilePath);
+                if (!string.IsNullOrEmpty(destinationDirectory))
+                {
+                    Directory.CreateDirectory(destinationDirectory);
+                }
+
                 File.Copy(fullFilePath, destinationFilePath, true);
             }
             catch (Exception ex) {
@@ -159,7 +163,7 @@ public sealed class UpgraderService : IHostedService
 
     private void StartServiceStep(TimeSpan wait)
     {
-        _logger.LogDebug($"11 StartAction waitTime = {wait.TotalSeconds.ToString()}");
+        _logger.LogDebug($"StartAction waitTime = {wait.TotalSeconds.ToString()}");
         ServiceController appDriver = new ServiceController(GetServiceName());
         if (appDriver.Status == ServiceControllerStatus.Stopped)
         {
@@ -203,9 +207,9 @@ public sealed class UpgraderService : IHostedService
 
         if (!files.Any()) return;
 
-        // TODO: EXECUTE IF NOT EXECUTED
-        await ZipOldVersion(files, servicePath, serviceOldVersionsPath);
         await ExtractZip(sourcePath, files, extractionPath);
+        
+        await ZipOldVersion(files, servicePath, serviceOldVersionsPath);
     }
 
     private async Task ExtractZip(string sourcePath, string[] files, string extractionPath)
@@ -253,8 +257,15 @@ public sealed class UpgraderService : IHostedService
         string destFile = Path.Combine(destPath, $"{DateTime.UtcNow.ToString("o").Replace(":", "_").Replace(".", "_")}.zip");
         _logger.LogDebug("Starting zipping '{0}'", sourcePath);
 
-        ZipFile.CreateFromDirectory(sourcePath, destFile);
+        try
+        {
+            ZipFile.CreateFromDirectory(sourcePath, destFile);
+        }
+        catch(Exception ex)
+        {
+            _logger.LogError(ex, "Old version could not be zipped");
+        }
 
-        _logger.LogInformation("The old version has been copied '{0}'", destFile);
+        _logger.LogDebug("The old version has been copied '{0}'", destFile);
     }
 }
