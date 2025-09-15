@@ -8,6 +8,6 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 });
 
 builder.Host
-    .UseAutoUpgradeUpgrader(builder.Configuration.GetSection("AutoUpgrade").Get<AutoUpgradeUpgraderConfiguration>()!);
+    .UseAutoUpgradeUpgrader(builder.Configuration);
 var app = builder.Build();
 app.Run();

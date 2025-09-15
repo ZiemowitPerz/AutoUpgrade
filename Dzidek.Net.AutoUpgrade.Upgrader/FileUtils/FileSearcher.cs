@@ -9,7 +9,7 @@ public static class FileSearcher
             throw new ArgumentException("Source directory path is not given.", nameof(sourceDirectory));
 
         if (!Directory.Exists(sourceDirectory))
-            throw new DirectoryNotFoundException($"The directory '{sourceDirectory}' does not exist.");
+            Directory.CreateDirectory(sourceDirectory);
 
         var allFiles = GetAllFiles(sourceDirectory);
 
