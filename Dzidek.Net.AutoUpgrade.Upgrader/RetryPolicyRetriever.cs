@@ -14,9 +14,18 @@ namespace Dzidek.Net.AutoUpgrade.Upgrader
                 sleepDurationProvider: GetDefaultDelay,
                 onRetry: (outcome, retryAttempt, timespan) =>
                 {
-                    logger.LogError(
-                        "Retry {RetryAttempt} after {Timespan}. {Message}\n Error: {Error}", 
-                        retryAttempt, timespan, message, outcome.Message + outcome.StackTrace);
+                    if (retryAttempt % 10 == 0)
+                    {
+                        logger.LogError(
+                           "Retry {RetryAttempt} after {Timespan}. {Message}\n Error: {Error}",
+                           retryAttempt, timespan, message, outcome.Message + outcome.StackTrace);
+                    }
+                    else
+                    {
+                        logger.LogWarning(
+                           "Retry {RetryAttempt} after {Timespan}. {Message}\n Error: {Error}",
+                           retryAttempt, timespan, message, outcome.Message + outcome.StackTrace);
+                    }
                 });
         }
 
@@ -28,9 +37,18 @@ namespace Dzidek.Net.AutoUpgrade.Upgrader
                 sleepDurationProvider: GetDefaultDelay,
                 onRetry: (outcome, retryAttempt, timespan) =>
                 {
-                    logger.LogError(
-                        "Retry {RetryAttempt} after {Timespan}. {Message}\n Error: {Error}", 
-                        retryAttempt, timespan, message, outcome.Message + outcome.StackTrace);
+                    if (retryAttempt % 10 == 0)
+                    {
+                        logger.LogError(
+                           "Retry {RetryAttempt} after {Timespan}. {Message}\n Error: {Error}",
+                           retryAttempt, timespan, message, outcome.Message + outcome.StackTrace);
+                    }
+                    else
+                    {
+                        logger.LogWarning(
+                           "Retry {RetryAttempt} after {Timespan}. {Message}\n Error: {Error}",
+                           retryAttempt, timespan, message, outcome.Message + outcome.StackTrace);
+                    }
                 });
         }
         public static RetryPolicy<List<T>> GetForeverWhenListNotEmpty<T>(ILogger logger, string message)
@@ -41,14 +59,21 @@ namespace Dzidek.Net.AutoUpgrade.Upgrader
                 sleepDurationProvider: GetDefaultDelay,
                 onRetry: (outcome, retryAttempt, timespan) =>
                 {
-                    logger.LogError(
+                    if (retryAttempt % 10 == 0)
+                    {
+                        logger.LogError(
                         "Retry {RetryAttempt} after {Timespan}. {Message}", retryAttempt, timespan, message);
+                    }
+                    else
+                    {
+                        logger.LogWarning(
+                        "Retry {RetryAttempt} after {Timespan}. {Message}", retryAttempt, timespan, message);
+                    }
                 });
         }
-
         private static TimeSpan GetDefaultDelay(int retryAttempt)
         {
-            return TimeSpan.FromSeconds(Math.Min(Math.Pow(2, retryAttempt), 30));
+            return TimeSpan.FromSeconds(Math.Min( 5 * Math.Pow(2, retryAttempt), 60));
         }
     }
 }

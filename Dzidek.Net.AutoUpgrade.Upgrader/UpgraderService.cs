@@ -107,8 +107,7 @@ public sealed class UpgraderService : IHostedService
     private void ReplaceFiles(List<FileMd5> filesToReplace, string extractionPath, string servicePath)
     {
         var notCopiedFiles = filesToReplace;
-
-        RetryPolicyRetriever.GetForeverWhenListNotEmpty<FileMd5>(_logger, "An error occurred while copying file")
+        RetryPolicyRetriever.GetForeverWhenListNotEmpty<FileMd5>(_logger, "An error occurred while copying 1 or more files: " + string.Join("; ", notCopiedFiles.Select(x => Path.Combine(servicePath, x.FileRelativePath))))
             .Execute(() =>
             {
                 notCopiedFiles = TryReplaceFiles(notCopiedFiles, extractionPath, servicePath);
@@ -135,7 +134,7 @@ public sealed class UpgraderService : IHostedService
             }
             catch (Exception ex) {
                 notCopiedFiles.Add(fileToReplace);
-                _logger.LogError($"An error occurred while copying file: {fullFilePath}.", ex);
+                _logger.LogWarning(ex, "An error occurred while copying file:{FullFilePath}.", fullFilePath);
             }
         }
         return notCopiedFiles;
@@ -143,17 +142,9 @@ public sealed class UpgraderService : IHostedService
 
     private List<FileMd5> GetFilesToReplace(List<FileMd5> newVersionFiles, List<FileMd5> currentVersionFiles)
     {
-        var result = new List<FileMd5>();
-        foreach (var newFile in newVersionFiles)
-        {
-            if (!currentVersionFiles.Any(x =>
-                x.FileRelativePath == newFile.FileRelativePath &&
-                x.Md5 == newFile.Md5))
-            {
-                result.Add(newFile);
-            }
-        }
-        return result;
+        return newVersionFiles.Where(x => !currentVersionFiles.Any(current =>
+                current.FileRelativePath == x.FileRelativePath &&
+                current.Md5 == x.Md5)).ToList();
     }
 
     private string GetServiceName()
@@ -163,8 +154,8 @@ public sealed class UpgraderService : IHostedService
 
     private void StartServiceStep(TimeSpan wait)
     {
-        _logger.LogDebug($"StartAction waitTime = {wait.TotalSeconds.ToString()}");
-        ServiceController appDriver = new ServiceController(GetServiceName());
+        var serviceName = GetServiceName();
+        ServiceController appDriver = new ServiceController(serviceName);
         if (appDriver.Status == ServiceControllerStatus.Stopped)
         {
             appDriver.Start();
@@ -173,6 +164,7 @@ public sealed class UpgraderService : IHostedService
         if (appDriver.Status != ServiceControllerStatus.Running)
         {
             appDriver.WaitForStatus(ServiceControllerStatus.Running, wait);
+            _logger.LogDebug("Service {ServiceName} is running", serviceName);
         }
     }
 
@@ -193,6 +185,7 @@ public sealed class UpgraderService : IHostedService
         }
 
         appDriver.WaitForStatus(ServiceControllerStatus.Stopped, wait);
+        _logger.LogDebug("Service {ServiceName} has been stopped", serviceName);
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
@@ -217,7 +210,7 @@ public sealed class UpgraderService : IHostedService
         // file is 1 whole zip
         foreach (string zipFile in files)
         {
-            _logger.LogDebug("Starting unzipping '{0}'", zipFile);
+            _logger.LogDebug("Started unzipping '{0}'", zipFile);
             string zipFileName = Path.GetFileName(zipFile);
             string zipPath = Path.Combine(sourcePath, zipFileName);
 
@@ -255,7 +248,7 @@ public sealed class UpgraderService : IHostedService
         }
 
         string destFile = Path.Combine(destPath, $"{DateTime.UtcNow.ToString("o").Replace(":", "_").Replace(".", "_")}.zip");
-        _logger.LogDebug("Starting zipping '{0}'", sourcePath);
+        _logger.LogDebug("Started zipping '{0}'", sourcePath);
 
         try
         {
@@ -265,7 +258,5 @@ public sealed class UpgraderService : IHostedService
         {
             _logger.LogError(ex, "Old version could not be zipped");
         }
-
-        _logger.LogDebug("The old version has been copied '{0}'", destFile);
     }
 }
