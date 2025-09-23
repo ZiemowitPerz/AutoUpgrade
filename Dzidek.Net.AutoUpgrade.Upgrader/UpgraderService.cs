@@ -40,7 +40,10 @@ public sealed class UpgraderService : IHostedService
             },
             new FileSystemWatcherActions()
             {
-                Created = (sender, args) => { Upgrade(newVersionPath, servicePath, _configuration.ServiceOldVersionsPath); }
+                Created = (sender, args) => {
+                    _logger.LogInformation("Upgrade has been started!"); 
+                    Upgrade(newVersionPath, servicePath, _configuration.ServiceOldVersionsPath); 
+                }
             });
     }
 
@@ -132,9 +135,13 @@ public sealed class UpgraderService : IHostedService
 
                 File.Copy(fullFilePath, destinationFilePath, true);
             }
-            catch (Exception ex) {
+            catch (IOException) {
                 notCopiedFiles.Add(fileToReplace);
-                _logger.LogWarning(ex, "An error occurred while copying file:{FullFilePath}.", fullFilePath);
+            }
+            catch(Exception ex)
+            {
+                _logger.LogError(ex, "An error occurred while copying file:{FullFilePath}.", fullFilePath);
+                notCopiedFiles.Add(fileToReplace);
             }
         }
         return notCopiedFiles;
