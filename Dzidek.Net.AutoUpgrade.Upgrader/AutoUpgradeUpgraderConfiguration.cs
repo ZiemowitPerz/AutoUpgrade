@@ -21,4 +21,6 @@ public sealed class AutoUpgradeUpgraderConfiguration
         ServiceName = serviceName;
         ServicePath = servicePath;
     }
+
+    public string GetNewVersionPath() => Path.Combine(ServicePath, "NewVersion");
 }

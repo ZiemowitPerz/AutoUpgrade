@@ -1,5 +1,8 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36408.4 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AutoUpgradeService.Service", "AutoUpgradeService.Service\AutoUpgradeService.Service.csproj", "{008DEA51-4FD9-4AED-99A3-1A06DD171041}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AutoUpgradeService.Upgrader", "AutoUpgradeService.Upgrader\AutoUpgradeService.Upgrader.csproj", "{A2678ABF-2B24-42AF-8275-14D19BECF345}"
@@ -9,6 +12,11 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Dzidek.Net.AutoUpgrade.Upgrader", "Dzidek.Net.AutoUpgrade.Upgrader\Dzidek.Net.AutoUpgrade.Upgrader.csproj", "{A13738D7-CE14-45AF-AE6D-F2A59B5E049C}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Dzidek.Net.AutoUpgrade.Common", "Dzidek.Net.AutoUpgrade.Common\Dzidek.Net.AutoUpgrade.Common.csproj", "{D769098C-7B33-49A5-BDD9-540FF78236C0}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{02EA681E-C7D8-13C7-8484-4AC65E1B71E8}"
+	ProjectSection(SolutionItems) = preProject
+		.editorconfig = .editorconfig
+	EndProjectSection
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -36,5 +44,8 @@ Global
 		{D769098C-7B33-49A5-BDD9-540FF78236C0}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{D769098C-7B33-49A5-BDD9-540FF78236C0}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{D769098C-7B33-49A5-BDD9-540FF78236C0}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
 	EndGlobalSection
 EndGlobal
